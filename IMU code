@@ -5,7 +5,7 @@ void setup() {
   Wire.begin(21, 22);
   Wire.setClock(100000);
 
-  Serial.println("MPU6050 RAW TEST START");
+  Serial.println("MPU6050 detected");
 }
 
 void loop() {
