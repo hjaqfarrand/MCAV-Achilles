@@ -1,0 +1,28 @@
+#include <Wire.h>
+
+void setup() {
+  Serial.begin(115200);
+  Wire.begin(21, 22);
+  Wire.setClock(100000);
+
+  Serial.println("MPU6050 RAW TEST START");
+}
+
+void loop() {
+  Wire.beginTransmission(0x68);
+  Wire.write(0x3B); // ACCEL_XOUT_H
+  Wire.endTransmission(false);
+  Wire.requestFrom(0x68, 6);
+
+  if (Wire.available() == 6) {
+    int16_t ax = Wire.read() << 8 | Wire.read();
+    int16_t ay = Wire.read() << 8 | Wire.read();
+    int16_t az = Wire.read() << 8 | Wire.read();
+
+    Serial.print("AX: "); Serial.print(ax);
+    Serial.print(" AY: "); Serial.print(ay);
+    Serial.print(" AZ: "); Serial.println(az);
+  }
+
+  delay(500);
+}
