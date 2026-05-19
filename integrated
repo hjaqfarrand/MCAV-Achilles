@@ -1,0 +1,183 @@
+// so far only motors and celeste integrated
+// need to integrate transmission 
+// check M1 and M2 wiring are correct
+// calibrate for RPM / PWM -> /320
+
+
+// motor control, celeste sensor and trigger
+#include <Wire.h>
+
+// pin definitions
+#define SLEEP_PIN 14
+//#define FAULT_PIN 
+#define IN1_PIN   32
+#define IN2_PIN   15
+#define IN3_PIN   27
+#define IN4_PIN   5
+#define ENC_A1    23
+#define ENC_B1    18
+#define ENC_A2    33
+#define ECC_B2    13
+
+// variables
+volatile long encoderCount1 = 0;
+volatile long encoderCount2 = 0;
+unsigned long lastPrintMs  = 0;
+long lastCountSnap = 0;
+
+// encoder 1
+void IRAM_ATTR encoderISR1() {
+  if (digitalRead(ENC_A1) == digitalRead(ENC_B1))
+    encoderCount1++;
+  else
+    encoderCount1--;
+}
+
+// encoder 1
+void IRAM_ATTR encoderISR2() {
+  if (digitalRead(ENC_A2) == digitalRead(ENC_B2))
+    encoderCount2++;
+  else
+    encoderCount2--;
+}
+
+// motor speed
+void motorSetSpeed(int speed) {
+  speed = constrain(speed, -255, 255);
+  if (speed > 0) {
+    // Motor 1
+    ledcWrite(IN1_PIN, speed);   // v3.x: pass pin directly, no channels
+    ledcWrite(IN2_PIN, 0);
+    // Motor 2
+    ledcWrite(IN3_PIN, speed);   // v3.x: pass pin directly, no channels
+    ledcWrite(IN4_PIN, 0);
+  } else if (speed < 0) {
+    // Motor 1
+    ledcWrite(IN1_PIN, 0);
+    ledcWrite(IN2_PIN, -speed);
+    // Motor 2
+    ledcWrite(IN3_PIN, 0);
+    ledcWrite(IN4_PIN, -speed);
+  } else {
+    // Motor 1
+    ledcWrite(IN1_PIN, 0);
+    ledcWrite(IN2_PIN, 0);
+    // Motor 2
+    ledcWrite(IN3_PIN, 0);
+    ledcWrite(IN4_PIN, 0);
+  }
+}
+
+void setup() {
+  Serial.begin(115200);
+  Wire.begin(21, 22);
+  Wire.setClock(100000);
+  Serial.println("MPU6050 detected");
+  Serial.println("--- Beginning Program ---")
+  Serial.println("f=fwd  r=rev  s=stop  +=faster  -=slower  e=reset encoder");
+
+  // Sleep pin
+  pinMode(SLEEP_PIN, OUTPUT);
+  digitalWrite(SLEEP_PIN, HIGH);
+
+  // v3.x API: ledcAttach(pin, freq, resolution)
+  ledcAttach(IN1_PIN, 5000, 8);
+  ledcAttach(IN2_PIN, 5000, 8);
+  ledcAttach(IN3_PIN, 5000, 8);
+  ledcAttach(IN4_PIN, 5000, 8);
+
+  // Force motor +/- LOW to start
+  ledcWrite(IN1_PIN, 0);
+  ledcWrite(IN2_PIN, 0);
+  ledcWrite(IN3_PIN, 0);
+  ledcWrite(IN4_PIN, 0);
+
+  // Encoder pins
+  pinMode(ENC_A1, INPUT);
+  pinMode(ENC_B1, INPUT);
+  pinMode(ENC_A2, INPUT);
+  pinMode(ENC_B2, INPUT);
+  attachInterrupt(digitalPinToInterrupt(ENC_A1), encoderISR1, CHANGE);
+  attachInterrupt(digitalPinToInterrupt(ENC_A2), encoderISR2, CHANGE);
+
+  // Quick sanity pulse on IN1, IN3 so you can verify with multimeter
+  Serial.println("Pulsing M1 IN1 briefly at startup to verify PWM output...");
+  ledcWrite(IN1_PIN, 128);
+  delay(2000);
+  ledcWrite(IN1_PIN, 0);
+  Serial.println("Pulse done. You should have seen ~1.6V on IN1 during those 2 seconds.");
+  
+  Serial.println("Pulsing M2 IN3 briefly at startup to verify PWM output...");
+  ledcWrite(IN1_PIN, 128);
+  delay(2000);
+  ledcWrite(IN3_PIN, 0);
+  Serial.println("Pulse done. You should have seen ~1.6V on IN3 during those 2 seconds.");
+}
+
+void loop() {
+
+  // MOTORS
+  static int cmdSpeed = 180;
+
+  if (Serial.available()) {
+
+    Serial.println("Do you want to retieve M1 (m1), M2 (m2), or sensor (sen) data?");
+    char input = Serial.read();
+
+    switch (input) {
+      case 'm1': 
+        Serial.println("Specify function:")
+        char c = Serial.read();
+        switch (c) {
+          case 'f': motorSetSpeed( cmdSpeed); Serial.printf("FWD speed=%d\n", cmdSpeed); break;
+          case 'r': motorSetSpeed(-cmdSpeed); Serial.printf("REV speed=%d\n", cmdSpeed); break;
+          case 's': motorSetSpeed(0);         Serial.println("STOP"); break;
+          case '+': cmdSpeed = min(255, cmdSpeed + 15); Serial.printf("Speed=%d\n", cmdSpeed); break;
+          case '-': cmdSpeed = max(0,   cmdSpeed - 15); Serial.printf("Speed=%d\n", cmdSpeed); break;
+          case 'e': noInterrupts(); encoderCount1 = 0; interrupts(); Serial.println("Encoder 1 reset"); break;
+        break;
+        }
+
+      case 'm2': 
+        Serial.println("Specify function:")
+        char c = Serial.read();
+        switch (c) {
+          case 'f': motorSetSpeed( cmdSpeed); Serial.printf("FWD speed=%d\n", cmdSpeed); break;
+          case 'r': motorSetSpeed(-cmdSpeed); Serial.printf("REV speed=%d\n", cmdSpeed); break;
+          case 's': motorSetSpeed(0);         Serial.println("STOP"); break;
+          case '+': cmdSpeed = min(255, cmdSpeed + 15); Serial.printf("Speed=%d\n", cmdSpeed); break;
+          case '-': cmdSpeed = max(0,   cmdSpeed - 15); Serial.printf("Speed=%d\n", cmdSpeed); break;
+          case 'e': noInterrupts(); encoderCount2 = 0; interrupts(); Serial.println("Encoder 1 reset"); break;
+        break;
+        }
+
+      case 'sen': 
+        // SENSORS
+        Wire.beginTransmission(0x68);
+        Wire.write(0x3B); // ACCEL_XOUT_H
+        Wire.endTransmission(false);
+        Wire.requestFrom(0x68, 6);
+
+        if (Wire.available() == 6) {
+          int16_t ax = Wire.read() << 8 | Wire.read();
+          int16_t ay = Wire.read() << 8 | Wire.read();
+          int16_t az = Wire.read() << 8 | Wire.read();
+
+          Serial.print("AX: "); Serial.print(ax);
+          Serial.print(" AY: "); Serial.print(ay);
+          Serial.print(" AZ: "); Serial.println(az);
+        }
+      break;
+    }
+
+  if (millis() - lastPrintMs >= 500) {
+    long cnt;
+    noInterrupts(); cnt = encoderCount; interrupts();
+    long delta = cnt - lastCountSnap;
+    lastCountSnap = cnt;
+    float rpm = ((float)delta / 22.0f) * 2.0f * 60.0f;
+    Serial.printf("Enc: %ld  Delta: %ld  RPM: %.1f\n", cnt, delta, rpm);
+    lastPrintMs = millis();
+  }
+
+}
