@@ -2,12 +2,12 @@
   nRF24L01 Receiver — ESP32
   ─────────────────────────────────────
   nRF24  →  ESP32
-  CE     →  GPIO 22
-  CSN    →  GPIO 21
+  CE     →  GPIO 26
+  CSN    →  GPIO 25
   SCK    →  GPIO 19
-  MISO   →  GPIO 18
-  MOSI   →  GPIO 17
-  VCC    →  3.3V
+  MISO   →  GPIO 17
+  MOSI   →  GPIO 16
+  VCC    →  3.3V  (do NOT use 5V)
   GND    →  GND
 
   LED    →  GPIO 16 → 330Ω → GND  (moved off 23, CE is already there)
@@ -15,8 +15,9 @@
 
 #include <SPI.h>
 #include <RF24.h>
+#include <nRF24L01.h>
 
-RF24 radio(22, 21);  // CE, CSN
+RF24 radio(26, 25); // CE=22, CSN=21
 
 const byte address[6] = "00001";
 const byte LED_PIN    = 23;
@@ -29,7 +30,7 @@ void setup() {
   pinMode(LED_PIN, OUTPUT);
   digitalWrite(LED_PIN, LOW);
 
-  SPI.begin(19, 18, 17, 21);  // SCK, MISO, MOSI, SS
+  SPI.begin(19, 17, 16, 25);  // SCK, MISO, MOSI, SS
 
   if (!radio.begin()) {
     Serial.println("nRF24 not responding — check wiring!");
