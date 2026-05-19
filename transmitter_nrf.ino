@@ -1,28 +1,29 @@
+#include <SPI.h>
+#include <nRF24L01.h>
+#include <RF24.h>
 /*
   nRF24L01 Transmitter — ESP32
   ─────────────────────────────────────
   nRF24  →  ESP32
-  CE     →  GPIO 22
-  CSN    →  GPIO 21
+  CE     →  GPIO 26
+  CSN    →  GPIO 25
   SCK    →  GPIO 19
-  MISO   →  GPIO 18
-  MOSI   →  GPIO 17
+  MISO   →  GPIO 17
+  MOSI   →  GPIO 16
   VCC    →  3.3V  (do NOT use 5V)
   GND    →  GND
 */
 
-#include <SPI.h>
-#include <RF24.h>
 
 // CE, CSN
-RF24 radio(22, 21);
+RF24 radio(26, 25); // CE=22, CSN=21
 
 const byte address[6] = "00001";
 
 void setup() {
   Serial.begin(115200);
 
-  SPI.begin(19, 18, 17, 21);
+  SPI.begin(19, 17, 16, 25);
 
   if (!radio.begin()) {
     Serial.println("nRF24 not responding — check wiring!");
