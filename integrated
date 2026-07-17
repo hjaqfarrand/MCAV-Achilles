@@ -1,11 +1,18 @@
-// so far only motors and celeste integrated
-// need to integrate transmission 
+// full integration, need to test with working esp
 // check M1 and M2 wiring are correct
 // calibrate for RPM / PWM -> /320
+// see transmission code for esp wiring
 
 
 // motor control, celeste sensor and trigger
 #include <Wire.h>
+
+// transmission
+#include <SPI.h>
+#include <nRF24L01.h>
+#include <RF24.h>
+// CE, CSN
+RF24 radio(26, 25); // CE=22, CSN=21
 
 // pin definitions
 #define SLEEP_PIN 14
@@ -24,6 +31,11 @@ volatile long encoderCount1 = 0;
 volatile long encoderCount2 = 0;
 unsigned long lastPrintMs  = 0;
 long lastCountSnap = 0;
+// transmission 
+const byte address[6] = "00001";
+
+
+// FUNCTIONS -----------------------------------
 
 // encoder 1
 void IRAM_ATTR encoderISR1() {
@@ -33,7 +45,7 @@ void IRAM_ATTR encoderISR1() {
     encoderCount1--;
 }
 
-// encoder 1
+// encoder 2
 void IRAM_ATTR encoderISR2() {
   if (digitalRead(ENC_A2) == digitalRead(ENC_B2))
     encoderCount2++;
@@ -68,12 +80,45 @@ void motorSetSpeed(int speed) {
   }
 }
 
+// transmission
+void loop() {
+  byte msg = 0xAB;
+  bool ok = radio.write(&msg, sizeof(msg));
+
+  if (ok) {
+    Serial.println("Sent OK — ACK received from receiver");
+  } else {
+    Serial.println("Send FAILED — no ACK");
+  }
+
+  delay(1000);
+}
+
+// MAIN LOOP ---------------------------
 void setup() {
   Serial.begin(115200);
+  SPI.begin(19, 17, 16, 25); // transmission
   Wire.begin(21, 22);
   Wire.setClock(100000);
   Serial.println("MPU6050 detected");
   Serial.println("--- Beginning Program ---")
+
+  // initial transmission check
+  if (!radio.begin()) {
+    Serial.println("nRF24 not responding — check wiring!");
+    while (1) {}
+  }
+
+  // transmission go
+  radio.setPALevel(RF24_PA_LOW);
+  radio.setDataRate(RF24_1MBPS);
+  radio.setChannel(108);
+  radio.openWritingPipe(address);
+  radio.stopListening();
+
+  Serial.println("Transmitter ready");
+  }
+
   Serial.println("f=fwd  r=rev  s=stop  +=faster  -=slower  e=reset encoder");
 
   // Sleep pin
