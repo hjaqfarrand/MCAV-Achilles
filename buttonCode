@@ -1,0 +1,35 @@
+// LED test and control code
+
+// initialise pins
+int ledCount = 3;
+int ledPins[] = {31, 33, 35};
+int ledDelay = 300;
+int buttonPin = 37;
+int state = 0;
+
+
+void setup() {
+  pinMode(ledPins[0], OUTPUT);
+  pinMode(ledPins[1], OUTPUT);
+  pinMode(ledPins[2], OUTPUT);
+  pinMode(buttonPin, INPUT);
+}
+
+void loop() {
+  digitalWrite(ledPins[0], LOW);
+  digitalWrite(ledPins[1], HIGH);
+  digitalWrite(ledPins[2], LOW);
+
+  if(digitalRead(buttonPin) == HIGH) {
+    state = 1;
+    while(state == 1){ 
+      digitalWrite(ledPins[0], HIGH);
+      digitalWrite(ledPins[1], LOW);
+      digitalWrite(ledPins[2], HIGH);
+      delay(1000);
+      digitalWrite(ledPins[2], LOW);
+      delay(1000);
+    }
+  }
+
+}
