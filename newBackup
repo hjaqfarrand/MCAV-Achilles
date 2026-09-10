@@ -2,7 +2,12 @@
 #include <SPI.h>
 #include <nRF24L01.h>
 #include <RF24.h>
-#include <ESP32Servo.h>
+#include <ESP32Servo.hz
+
+#define _USE_MATH_DEFINES
+#include <math.h>
+# define M_PI           3.14159265358979323846  /* pi */ 
+
 
 #define CE 19      // NRF24L01
 #define CSN 18     // NRF24L01
@@ -22,6 +27,13 @@
 #define S2 15       // Servo 2
 Servo servo1;
 Servo servo2;
+
+// values for motors
+float DELTA_R;
+float DELTA_L;
+float THETA_S;
+
+
 
 // ---- Encoder ----
 #define ENCODER_A 21   // Green wire — interrupt pin
@@ -139,6 +151,25 @@ void updateEncoderSpeed() {
     lastSpeedCalc = now;
   }
 }
+
+
+// --- Read from raspberry pi
+void raspData() {
+
+}
+
+
+
+
+// ------- Calculate delta L --------------------------------------------------------
+float deltaD() {
+
+}
+
+
+
+// ------- Calculate delta R --------------------------------------------------------
+
 
 // ---- Main loop ----
 void loop() {
