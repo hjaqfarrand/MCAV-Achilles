@@ -6,7 +6,7 @@
 
 #define _USE_MATH_DEFINES
 #include <math.h>
-# define M_PI           3.14159265358979323846  /* pi */ 
+# define M_PI 3.14159265358979323846
 
 
 #define CE 19      // NRF24L01
@@ -32,7 +32,6 @@ Servo servo2;
 float DELTA_R;
 float DELTA_L;
 float THETA_S;
-
 
 
 // ---- Encoder ----
@@ -153,22 +152,23 @@ void updateEncoderSpeed() {
 }
 
 
-// --- Read from raspberry pi
-void raspData() {
+// --- Read from raspberrypi
+void rasp_read() {
 
 }
 
-
-
-
-// ------- Calculate delta L --------------------------------------------------------
-float deltaD() {
-
-}
 
 
 
 // ------- Calculate delta R --------------------------------------------------------
+float calc_delta_R() {
+  deltaR = (180/M_PI)*(atan2(1583.077 + 28.906*(20.054*sin(M_PI*theta_s/180) + sqrt(39^2 - (20.054*(1 - cos(M_PI*theta_s/180)))^2) - 39), 176.216 - 0.030*(20.054*sin(M_PI*theta_s/180) + sqrt(39^2 - (20.054*(1 - cos(M_PI*theta_s/180)))^2) - 39)) - acos((176.216 + 54.760*(20.054*sin(M_PI*theta_s/180) + sqrt(39^2 - (20.054*(1 - cos(M_PI*theta_s/180)))^2) - 39) + 0.5*(20.054*sin(M_PI*theta_s/180) + sqrt(39^2 - (20.054*(1 - cos(M_PI*theta_s/180)))^2) - 39)^2)/sqrt((176.216 - 0.030*(20.054*sin(M_PI*theta_s/180) + sqrt(39^2 - (20.054*(1 - cos(M_PI*theta_s/180)))^2) - 39))^2 + (1583.077 + 28.906*(20.054*sin(M_PI*theta_s/180) + sqrt(39^2 - (20.054*(1 - cos(M_PI*theta_s/180)))^2) - 39))^2)));
+}
+
+// ------- Calculate delta L --------------------------------------------------------
+float calc_delta_L {
+  delta_L = (180/M_PI)*(atan2(-1583.077 + 28.906*(20.054*sin(M_PI*theta_s/180) + sqrt(39^2 - (20.054*(1 - cos(M_PI*theta_s/180)))^2) - 39), 176.216 + 0.030*(20.054*sin(M_PI*theta_s/180) + sqrt(39^2 - (20.054*(1 - cos(M_PI*theta_s/180)))^2) - 39)) + acos((176.216 - 54.760*(20.054*sin(M_PI*theta_s/180) + sqrt(39^2 - (20.054*(1 - cos(M_PI*theta_s/180)))^2) - 39) + 0.5*(20.054*sin(M_PI*theta_s/180) + sqrt(39^2 - (20.054*(1 - cos(M_PI*theta_s/180)))^2) - 39)^2)/sqrt((176.216 + 0.030*(20.054*sin(M_PI*theta_s/180) + sqrt(39^2 - (20.054*(1 - cos(M_PI*theta_s/180)))^2) - 39))^2 + (-1583.077 + 28.906*(20.054*sin(M_PI*theta_s/180) + sqrt(39^2 - (20.054*(1 - cos(M_PI*theta_s/180)))^2) - 39))^2)));
+}
 
 
 // ---- Main loop ----
