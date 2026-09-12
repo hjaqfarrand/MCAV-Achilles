@@ -1,0 +1,144 @@
+/*
+  nRF24L01:
+    CE   -> GPIO 21
+    CSN  -> GPIO 15
+    SCK  -> GPIO 22
+    MISO -> GPIO 23
+    MOSI -> GPIO 18
+    VCC  -> 3.3V
+    GND  -> GND
+*/
+
+#include <SPI.h>
+#include <nRF24L01.h>
+#include <RF24.h>
+
+// ---------- nRF24 pins ----------
+#define CE_PIN    21
+#define CSN_PIN   15
+#define SCK_PIN   22
+#define MISO_PIN  23
+#define MOSI_PIN  18
+
+// ---------- Buttons ----------
+#define ESTOP_BUTTON    12
+#define RESTART_BUTTON  14
+
+// ---------- LEDs ----------
+#define RED_LED    26
+#define GREEN_LED  25
+
+// ---------- Radio ----------
+RF24 radio(CE_PIN, CSN_PIN);
+
+const byte address[6] = "00001";
+// Commands sent to receiver
+enum Command : byte {
+  CMD_ESTOP   = 0xAB,
+  CMD_RESTART = 0xAC
+};
+
+// Button previous states
+bool lastEstopState = HIGH;
+bool lastRestartState = HIGH;
+
+// Current system state
+bool estopActive = false;
+
+void setup() {
+
+  Serial.begin(115200);
+
+  // Buttons
+  pinMode(ESTOP_BUTTON, INPUT_PULLUP);
+  pinMode(RESTART_BUTTON, INPUT_PULLUP);
+
+  pinMode(RED_LED, OUTPUT);
+  pinMode(GREEN_LED, OUTPUT);
+
+  digitalWrite(RED_LED, LOW);
+  digitalWrite(GREEN_LED, HIGH);
+
+
+  // Start SPI
+  SPI.begin(SCK_PIN, MISO_PIN, MOSI_PIN, CSN_PIN);
+
+
+  // Start nRF24
+  if (!radio.begin()) {
+
+    Serial.println("nRF24 NOT detected!");
+
+    digitalWrite(RED_LED, HIGH);
+    digitalWrite(GREEN_LED, LOW);
+
+    while (1);
+  }
+
+
+  radio.openWritingPipe(address);
+
+  radio.setPALevel(RF24_PA_LOW);
+  radio.setDataRate(RF24_1MBPS);
+  radio.stopListening();
+  Serial.println("TRANSMITTER READY");
+  Serial.println("STATE: MOVING");
+}
+
+void loop() {
+
+  bool estopState = digitalRead(ESTOP_BUTTON);
+  bool restartState = digitalRead(RESTART_BUTTON);
+
+  // E-STOP BUTTON
+
+  if (lastEstopState == HIGH && estopState == LOW) {
+    Command command = CMD_ESTOP;
+    bool success = radio.write(&command, sizeof(command));
+    if (success) {
+
+      Serial.println("EMERGENCY STOP SENT");
+      // Change state
+      estopActive = true;
+      // LEDs
+      digitalWrite(RED_LED, HIGH);
+      digitalWrite(GREEN_LED, LOW);
+      Serial.println("STATE: E-STOP");
+    }
+
+    else {
+      Serial.println("E-STOP SEND FAILED");
+    }
+
+    delay(50);
+  }
+
+  // RESTART BUTTON
+  if (lastRestartState == HIGH && restartState == LOW) {
+    Command command = CMD_RESTART;
+    bool success = radio.write(&command, sizeof(command));
+    if (success) {
+
+      Serial.println("RESTART SENT");
+      // Change state
+      estopActive = false;
+
+      // LEDs
+      digitalWrite(RED_LED, LOW);
+      digitalWrite(GREEN_LED, HIGH);
+
+      Serial.println("STATE: MOVING");
+    }
+    else {
+
+      Serial.println("RESTART SEND FAILED");
+
+    }
+
+    delay(50);
+  }
+
+  lastEstopState = estopState;
+  lastRestartState = restartState;
+
+}
