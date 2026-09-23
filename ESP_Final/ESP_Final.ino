@@ -30,7 +30,7 @@
 #define RX 3          // Change to 16 if using separate pins from USB
 #define PI_BAUD 115200
 
-#define LED_PIN 15     // Onboard status LED (GPIO 2 on most ESP32 DevKits)
+#define LED_PIN 2     // Onboard status LED (GPIO 2 on most ESP32 DevKits)
 
 // Encoder 1 (Front / Left)
 #define A1 34
