@@ -11,11 +11,11 @@
 // ========================================
 
 // nRF24L01
-#define CE   26
-#define CSN  27
-#define SCK  14
-#define MOSI 12
-#define MISO 13
+#define IRQ 13
+#define CSN 26
+#define SCK 27
+#define MOSI 14
+#define MISO 12
 
 // DRV8833
 #define IN1 21
