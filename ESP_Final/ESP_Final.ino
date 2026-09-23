@@ -11,6 +11,7 @@
 // ========================================
 
 // nRF24L01
+#define CE 25
 #define IRQ 13
 #define CSN 26
 #define SCK 27
