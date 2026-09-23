@@ -25,9 +25,10 @@
 #define IN4 5
 
 // Raspberry Pi UART
-// Changed from GPIO 1/3 to avoid USB Serial conflicts
-#define TX 1
-#define RX 3
+// GPIO 17 (TX2) and GPIO 16 (RX2) avoid USB Serial (GPIO 1/3) conflicts
+// so i dont have to pull out the pins every time i flash the esp
+#define TX 17
+#define RX 16
 
 // Encoder 1 - Front
 #define A1 34
@@ -45,6 +46,14 @@
 #define REAR_NEUTRAL  90
 
 // ========================================
+// CONFIGURATION FLAGS
+// ========================================
+
+// Set to true to enforce strict wireless nRF24 E-Stop check (halts boot if missing).
+// Set to false for standalone bench testing without the wireless transceiver.
+#define ENABLE_NRF_CHECK false
+
+// ========================================
 // CONSTANTS
 // ========================================
 
@@ -53,7 +62,7 @@
 #define MAX_SPEED 255
 
 #define PI_TIMEOUT_MS 500
-#define ODOM_INTERVAL 29
+#define ODOM_INTERVAL 35
 #define PI_BAUD 115200
 
 // Must be calibrated for your car
@@ -244,7 +253,9 @@ void setMotorSpeed(float frontSpeed, float rearSpeed)
 {
     // E-stop or invalid/stale Pi command
     if (eStopped ||
+#if ENABLE_NRF_CHECK
         !radioReady ||
+#endif
         !piCommandValid ||
         millis() - lastPiCommandTime > PI_TIMEOUT_MS)
     {
@@ -279,6 +290,18 @@ void setMotorSpeed(float frontSpeed, float rearSpeed)
 
 bool parsePiCommand(const char *packet)
 {
+    if (strcmp(packet, "START") == 0 || strcmp(packet, "CMD,RESTART") == 0)
+    {
+        restartSystem();
+        return true;
+    }
+
+    if (strcmp(packet, "STOP") == 0 || strcmp(packet, "CMD,ESTOP") == 0)
+    {
+        emergencyStop();
+        return true;
+    }
+
     car_command newCommand;
 
     int consumed = 0;
@@ -448,8 +471,18 @@ void sendOdometry()
     previousCount1 = count1;
     previousCount2 = count2;
 
-    // Send to Raspberry Pi
+    // Send to Raspberry Pi (UART2) and mirror to USB Serial Monitor (UART0)
     PiSerial.printf(
+        "ODOM,%ld,%ld,%.2f,%.2f,%.2f,%.2f\n",
+        count1,
+        count2,
+        rpm1,
+        rpm2,
+        currentCommand.frontWheelAngle,
+        currentCommand.rearWheelAngle
+    );
+
+    Serial.printf(
         "ODOM,%ld,%ld,%.2f,%.2f,%.2f,%.2f\n",
         count1,
         count2,
@@ -485,12 +518,6 @@ void emergencyStop()
 
 void restartSystem()
 {
-    // Do not restart if radio is unavailable
-    if (!radioReady)
-    {
-        return;
-    }
-
     // Clear previous motion commands
     currentCommand.frontWheelSpeed = 0;
     currentCommand.rearWheelSpeed = 0;
@@ -515,7 +542,9 @@ void checkRadio()
 {
     if (!radioReady)
     {
+#if ENABLE_NRF_CHECK
         emergencyStop();
+#endif
         return;
     }
 
@@ -685,8 +714,10 @@ void setup()
 
     if (!radioReady)
     {
-        Serial.println("ERROR: nRF24 not detected");
+        Serial.println("WARNING: nRF24 not detected");
 
+#if ENABLE_NRF_CHECK
+        Serial.println("ERROR: nRF24 is required (ENABLE_NRF_CHECK=true). Halting system.");
         eStopped = true;
         stopMotors();
 
@@ -695,24 +726,33 @@ void setup()
             stopMotors();
             delay(100);
         }
+#else
+        Serial.println("INFO: Continuing in bench-test mode (ENABLE_NRF_CHECK=false)");
+#endif
     }
+    else
+    {
+        // Must match transmitter settings
+        radio.setChannel(76);
+        radio.setPALevel(RF24_PA_LOW);
+        radio.setDataRate(RF24_250KBPS);
 
-    // Must match transmitter settings
-    radio.setChannel(76);
-    radio.setPALevel(RF24_PA_LOW);
-    radio.setDataRate(RF24_250KBPS);
+        radio.openReadingPipe(1, address);
 
-    radio.openReadingPipe(1, address);
+        radio.startListening();
 
-    radio.startListening();
-
-    Serial.println("nRF24 ready");
+        Serial.println("nRF24 ready");
+    }
 
     // ------------------------------------
     // 7. Initial Safety State
     // ------------------------------------
 
-    eStopped = true;
+#if ENABLE_NRF_CHECK
+    eStopped = true;  // Requires wireless remote CMD_RESTART to enable
+#else
+    eStopped = false; // Bench testing: ready immediately
+#endif
     piCommandValid = false;
 
     currentCommand.frontWheelSpeed = 0;
@@ -727,7 +767,9 @@ void setup()
 
     Serial.println("======================");
     Serial.println("ESP32 READY");
-    Serial.println("Waiting for restart");
+#if ENABLE_NRF_CHECK
+    Serial.println("Waiting for restart (nRF)");
+#endif
     Serial.println("======================");
 }
 
