@@ -10,7 +10,8 @@
 // ==========================================
 
 // nRF24L01 Wireless E-stop
-#define CE 26
+#define CE 25
+#define IRQ 26
 #define CSN 27
 #define SCK 14
 #define MOSI 12
@@ -29,7 +30,7 @@
 #define RX 3          // Change to 16 if using separate pins from USB
 #define PI_BAUD 115200
 
-#define LED_PIN 2     // Onboard status LED (GPIO 2 on most ESP32 DevKits)
+#define LED_PIN 15     // Onboard status LED (GPIO 2 on most ESP32 DevKits)
 
 // Encoder 1 (Front / Left)
 #define A1 34
@@ -40,7 +41,7 @@
 #define B2 33
 
 // Servos (Steering)
-#define front 2 // Front servo GPIO (Note: change if GPIO 2 is used as LED_PIN)
+#define front 15 // Front servo GPIO (Note: change if GPIO 2 is used as LED_PIN)
 #define rear 4  // Rear servo GPIO
 
 // Servo neutral positions (physical angle when offset is 0.0 deg)
