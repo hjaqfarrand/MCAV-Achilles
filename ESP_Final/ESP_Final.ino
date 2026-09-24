@@ -32,10 +32,10 @@
 
 // Encoder 1 - Front
 #define A1 34
-#define B1 32
+#define B1 35
 
 // Encoder 2 - Rear
-#define A2 35
+#define A2 32
 #define B2 33
 
 // Servos
