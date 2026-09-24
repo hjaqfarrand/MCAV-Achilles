@@ -1,203 +1,788 @@
-// For Achilles 3 2026 ESP upload
-// Creation 14/09/2026: bones
-
-// ---------- Includes, variables and values ----------
-#include <Wire.h>
+#include <Arduino.h>
 #include <SPI.h>
-#include <nRF24L01.h>
 #include <RF24.h>
-#include <ESP32Servo.hz
-
-// Time
-#include <iostream>
-#include <chrono>
-#include <thread>
-
-// Math
-#define _USE_MATH_DEFINES
+#include <nRF24L01.h>
+#include <ESP32Servo.h>
 #include <math.h>
-# define M_PI 3.14159265358979323846
+#include <stdio.h>
 
-// ---------- Pin outs ----------
-// NRF24L01
-#define IRQ 29
-#define CE 26
-#define CSN 27
-#define SCK 14
-#define MOSI 12
-#define MISO 13
+// ========================================
+// PIN DEFINITIONS
+// ========================================
 
-// Drive controller
-#define in1 34
-#define in2 35
-#define in3 32
-#define in4 33
+// nRF24L01
+#define CE 25
+#define IRQ 13
+#define CSN 26
+#define SCK 27
+#define MOSI 14
+#define MISO 12
 
-// Raspberry pi --- add actual pins
-#define send TX0
-#define recieve RXO
+// DRV8833
+#define IN1 21
+#define IN2 19
+#define IN3 18
+#define IN4 5
 
-// Encoder
-#define A1 21
-#define A2 19
-#define B1 18
-#define B2 5
+// Raspberry Pi UART
+// GPIO 17 (TX2) and GPIO 16 (RX2) avoid USB Serial (GPIO 1/3) conflicts
+// so i dont have to pull out the pins every time i flash the esp
+#define TX 17
+#define RX 16
+
+// Encoder 1 - Front
+#define A1 34
+#define B1 35
+
+// Encoder 2 - Rear
+#define A2 32
+#define B2 33
 
 // Servos
-#define s1 4
-#define s2 2
+#define FRONT_SERVO_PIN 2
+#define REAR_SERVO_PIN  4
 
-// ---------- Other definitions ----------
+#define FRONT_NEUTRAL 45
+#define REAR_NEUTRAL  90
 
-// NRF24L01
-RF24 radio(CE, CSN); // CE, CSN
+// ========================================
+// CONFIGURATION FLAGS
+// ========================================
+
+// Set to true to enforce strict wireless nRF24 E-Stop check (halts boot if missing).
+// Set to false for standalone bench testing without the wireless transceiver.
+#define ENABLE_NRF_CHECK false
+
+// ========================================
+// CONSTANTS
+// ========================================
+
+#define PWM_FREQ 5000
+#define PWM_RES 8
+#define MAX_SPEED 255
+
+#define PI_TIMEOUT_MS 500
+#define ODOM_INTERVAL 35
+#define PI_BAUD 115200
+
+// Must be calibrated for your car
+const float MAX_WHEEL_SPEED = 1.0f; // m/s
+
+// Must match encoder rising edges per wheel revolution
+const float ENCODER_PPR = 360.0f;
+
+// ========================================
+// OBJECTS
+// ========================================
+
+HardwareSerial PiSerial(2);
+
+RF24 radio(CE, CSN);
+
+Servo frontServo;
+Servo backServo;
+
+// ========================================
+// NRF SETTINGS
+// ========================================
+
 const byte address[6] = "00001";
 
-// Servos
-Servo servo1;
-Servo servo2;
+// Must match transmitter command values
+const uint8_t CMD_ESTOP   = 0x01;
+const uint8_t CMD_RESTART = 0x02;
 
-// Motor calculated values
-float DELTA_R;
-float DELTA_L;
-float THETA_S;
+// ========================================
+// COMMAND STRUCTURE
+// ========================================
 
-// Encoders
-const float ENCODER_PPR = 990.0;
-volatile long encoderCount = 0;
-unsigned long lastSpeedCalc = 0;
-long lastCount = 0;
-float currentRPM = 0;
+struct car_command
+{
+    float frontWheelSpeed;
+    float rearWheelSpeed;
 
-// Radio for estop
-RF24 radio(CE_PIN, CSN_PIN);
+    float frontWheelAngle;
+    float rearWheelAngle;
+};
 
-// PWM setup (v3.0+ API)
-#define PWM_FREQ 5000
-#define PWM_RES  8
-int DRIVE_SPEED;    // set drive speed from rasp pi 
+car_command currentCommand = {
+    0.0f,
+    0.0f,
+    0.0f,
+    0.0f
+};
 
-// ---------- Set up ----------
-void setup() {
-  Serial.begin(115200);
+// ========================================
+// GLOBAL VARIABLES
+// ========================================
 
-  SPI.begin(SCK, MISO, MOSI, CSN);
+// Encoder counts
+volatile long encoderCount1 = 0;
+volatile long encoderCount2 = 0;
 
-  ledcAttach(in1, PWM_FREQ, PWM_RES);
-  ledcAttach(in2, PWM_FREQ, PWM_RES);
-  ledcAttach(in3, PWM_FREQ, PWM_RES);
-  ledcAttach(in4, PWM_FREQ, PWM_RES);
+// Previous encoder counts
+long previousCount1 = 0;
+long previousCount2 = 0;
 
-  servo1.attach(s1);
-  servo2.attach(s2);
+// RPM
+float rpm1 = 0.0f;
+float rpm2 = 0.0f;
 
-  pinMode(A1, INPUT);
-  pinMode(A2, OUTPUT);
-  pinMode(B1, INPUT);
-  pinMode(B2, OUTPUT);
+// Timing
+unsigned long lastOdomTime = 0;
+unsigned long lastPiCommandTime = 0;
 
-  // change this!!!!
-  attachInterrupt(digitalPinToInterrupt(A1), encoderISR, CHANGE);
+// Safety
+bool eStopped = true;
+bool piCommandValid = false;
+bool radioReady = false;
 
-  if (!radio.begin()) {
-    Serial.println("nRF24 not responding — check wiring!");
-    while (1) {}
-  }
+// UART buffer
+char piInputBuffer[100];
+size_t piInputIndex = 0;
+bool discardPiLine = false;
 
-  radio.setPALevel(RF24_PA_LOW);
-  radio.setDataRate(RF24_1MBPS);
-  radio.setChannel(76);
-  radio.openReadingPipe(1, address);
-  radio.startListening();
+// ========================================
+// FUNCTION DECLARATIONS
+// ========================================
 
-  Serial.println("Receiver ready — moving until e-stop is received...");
+void stopMotors();
+void emergencyStop();
+void restartSystem();
+void checkRadio();
+
+void readRaspberryPi();
+bool parsePiCommand(const char *packet);
+
+void setMotorSpeed(float frontSpeed, float rearSpeed);
+void setSingleMotor(int pin1, int pin2, float speed);
+
+void sendOdometry();
+void setServoAngles(float frontAngle, float rearAngle);
+
+// ========================================
+// ENCODER INTERRUPTS
+// ========================================
+
+void IRAM_ATTR readEncoder1()
+{
+    if (digitalRead(B1) == HIGH)
+    {
+        encoderCount1++;
+    }
+    else
+    {
+        encoderCount1--;
+    }
 }
 
-
-
-// ---------- Funtions ----------
-
-// ---- Encoders ----
-// Read and count for encoder (ref. 48)
-// Update encoder speed
-void updateEncoderSpeed() {
-  unsigned long now = millis();
-  if (now - lastSpeedCalc >= 500) {
-    long count = encoderCount;
-    long delta = count - lastCount;
-    float revs = delta / ENCODER_PPR;
-    currentRPM = revs / ((now - lastSpeedCalc) / 60000.0);
-    Serial.printf("Encoder count: %ld  RPM: %.1f\n", count, currentRPM);
-    lastCount = count;
-    lastSpeedCalc = now;
-  }
+void IRAM_ATTR readEncoder2()
+{
+    if (digitalRead(B2) == HIGH)
+    {
+        encoderCount2++;
+    }
+    else
+    {
+        encoderCount2--;
+    }
 }
 
-// ---- Safety ----
-// Estop
-void eStop() {
-  Serial.println("EMERGENCY STOP ACTIVATED");
-  stopMotors();
-  // digitalWrite(BUTTON_OFF, LOW); use if does'nt push back down
-  servo1.detach();
-  servo2.detach();
-  eStopped = true;
-}
-// Restart
-void restart() {
-  Serial.println("Restarting...");
-  // digitalWrite(BUTTON_ON, LOW); use if does'nt push back down
-  delay(1);
-  servo1.attach(s1);
-  servo2.attach(s2);
-  eStopped = false;
-} 
+// ========================================
+// STOP MOTORS
+// ========================================
 
+void stopMotors()
+{
+    ledcWrite(IN1, 0);
+    ledcWrite(IN2, 0);
 
-// ---- Movement ----
-// Turn all motors off
-void stopMotors() {
-  ledcWrite(in1, 0);
-  ledcWrite(in2, 0);
-  ledcWrite(in3, 0);
-  ledcWrite(in4, 0);
-}
-// Move vehicle forward
-int moveForward(DRIVE_SPEED) {
-  ledcWrite(in1, DRIVE_SPEED);
-  ledcWrite(in2, 0);
-  ledcWrite(in3, DRIVE_SPEED);
-  ledcWrite(in4, 0);
+    ledcWrite(IN3, 0);
+    ledcWrite(IN4, 0);
 }
 
+// ========================================
+// SINGLE MOTOR CONTROL
+// ========================================
 
-// ---- Raspberry Pi ----
-// Read from raspeberry pi
-// decide on output
-// recieve drive speed to DRIVE SPEED
-// front wheel speed, rear wheel speed, front wheel angle, rear wheel angle
-void
+void setSingleMotor(int pin1, int pin2, float speed)
+{
+    if (!isfinite(speed))
+    {
+        ledcWrite(pin1, 0);
+        ledcWrite(pin2, 0);
+        return;
+    }
 
-// ---- Motor Calculations ----
-// Calculate delta R
-float calc_delta_R() {
-  deltaR = (180/M_PI)*(atan2(1583.077 + 28.906*(20.054*sin(M_PI*theta_s/180) + sqrt(39^2 - (20.054*(1 - cos(M_PI*theta_s/180)))^2) - 39), 176.216 - 0.030*(20.054*sin(M_PI*theta_s/180) + sqrt(39^2 - (20.054*(1 - cos(M_PI*theta_s/180)))^2) - 39)) - acos((176.216 + 54.760*(20.054*sin(M_PI*theta_s/180) + sqrt(39^2 - (20.054*(1 - cos(M_PI*theta_s/180)))^2) - 39) + 0.5*(20.054*sin(M_PI*theta_s/180) + sqrt(39^2 - (20.054*(1 - cos(M_PI*theta_s/180)))^2) - 39)^2)/sqrt((176.216 - 0.030*(20.054*sin(M_PI*theta_s/180) + sqrt(39^2 - (20.054*(1 - cos(M_PI*theta_s/180)))^2) - 39))^2 + (1583.077 + 28.906*(20.054*sin(M_PI*theta_s/180) + sqrt(39^2 - (20.054*(1 - cos(M_PI*theta_s/180)))^2) - 39))^2)));
+    // Convert m/s to PWM
+    float magnitude = fabsf(speed);
+
+    int pwm = (int)roundf(
+        magnitude / MAX_WHEEL_SPEED * MAX_SPEED
+    );
+
+    pwm = constrain(pwm, 0, MAX_SPEED);
+
+    // Forward
+    if (speed > 0.0f)
+    {
+        ledcWrite(pin2, 0);
+        ledcWrite(pin1, pwm);
+    }
+
+    // Reverse
+    else if (speed < 0.0f)
+    {
+        ledcWrite(pin1, 0);
+        ledcWrite(pin2, pwm);
+    }
+
+    // Stop
+    else
+    {
+        ledcWrite(pin1, 0);
+        ledcWrite(pin2, 0);
+    }
 }
-// Calculate delta L
-float calc_delta_L {
-  delta_L = (180/M_PI)*(atan2(-1583.077 + 28.906*(20.054*sin(M_PI*theta_s/180) + sqrt(39^2 - (20.054*(1 - cos(M_PI*theta_s/180)))^2) - 39), 176.216 + 0.030*(20.054*sin(M_PI*theta_s/180) + sqrt(39^2 - (20.054*(1 - cos(M_PI*theta_s/180)))^2) - 39)) + acos((176.216 - 54.760*(20.054*sin(M_PI*theta_s/180) + sqrt(39^2 - (20.054*(1 - cos(M_PI*theta_s/180)))^2) - 39) + 0.5*(20.054*sin(M_PI*theta_s/180) + sqrt(39^2 - (20.054*(1 - cos(M_PI*theta_s/180)))^2) - 39)^2)/sqrt((176.216 + 0.030*(20.054*sin(M_PI*theta_s/180) + sqrt(39^2 - (20.054*(1 - cos(M_PI*theta_s/180)))^2) - 39))^2 + (-1583.077 + 28.906*(20.054*sin(M_PI*theta_s/180) + sqrt(39^2 - (20.054*(1 - cos(M_PI*theta_s/180)))^2) - 39))^2)));
+
+// ========================================
+// DUAL MOTOR CONTROL
+// ========================================
+
+void setMotorSpeed(float frontSpeed, float rearSpeed)
+{
+    // E-stop or invalid/stale Pi command
+    if (eStopped ||
+#if ENABLE_NRF_CHECK
+        !radioReady ||
+#endif
+        !piCommandValid ||
+        millis() - lastPiCommandTime > PI_TIMEOUT_MS)
+    {
+        stopMotors();
+        return;
+    }
+
+    // Reject invalid numbers
+    if (!isfinite(frontSpeed) ||
+        !isfinite(rearSpeed))
+    {
+        stopMotors();
+        return;
+    }
+
+    // Front motor
+    setSingleMotor(IN1, IN2, frontSpeed);
+
+    // Rear motor
+    setSingleMotor(IN3, IN4, rearSpeed);
 }
 
+// ========================================
+// PARSE RASPBERRY PI COMMAND
+// ========================================
 
-// ---------- Main loop ----------
-void loop() {
+// Expected packet:
+// V,frontSpeed,rearSpeed,frontAngle,rearAngle
+//
+// Example:
+// V,0.500,0.500,15.000,-10.000
 
-  moveForward(130); 
+bool parsePiCommand(const char *packet)
+{
+    if (strcmp(packet, "START") == 0 || strcmp(packet, "CMD,RESTART") == 0)
+    {
+        restartSystem();
+        return true;
+    }
 
-  // move for 10 seconds
-  this_thread::sleep_for(chrono::seconds(10));
+    if (strcmp(packet, "STOP") == 0 || strcmp(packet, "CMD,ESTOP") == 0)
+    {
+        emergencyStop();
+        return true;
+    }
 
-  // turn motors off
-  stopMotors()
+    car_command newCommand;
+
+    int consumed = 0;
+
+    int parsed = sscanf(
+        packet,
+        "V,%f,%f,%f,%f%n",
+        &newCommand.frontWheelSpeed,
+        &newCommand.rearWheelSpeed,
+        &newCommand.frontWheelAngle,
+        &newCommand.rearWheelAngle,
+        &consumed
+    );
+
+    // Validate packet format
+    if (parsed != 4 ||
+        consumed == 0 ||
+        packet[consumed] != '\0')
+    {
+        return false;
+    }
+
+    // Validate numeric values
+    if (!isfinite(newCommand.frontWheelSpeed) ||
+        !isfinite(newCommand.rearWheelSpeed) ||
+        !isfinite(newCommand.frontWheelAngle) ||
+        !isfinite(newCommand.rearWheelAngle))
+    {
+        return false;
+    }
+
+    // Reject speeds outside configured limits
+    if (fabsf(newCommand.frontWheelSpeed) > MAX_WHEEL_SPEED ||
+        fabsf(newCommand.rearWheelSpeed) > MAX_WHEEL_SPEED)
+    {
+        return false;
+    }
+
+    // Reject unreasonable wheel angle commands
+    // Replace with validated mechanical limits.
+    if (fabsf(newCommand.frontWheelAngle) > 30.0f ||
+        fabsf(newCommand.rearWheelAngle) > 30.0f)
+    {
+        return false;
+    }
+
+    // Save command
+    currentCommand = newCommand;
+
+    lastPiCommandTime = millis();
+
+    piCommandValid = true;
+
+    return true;
+}
+
+// ========================================
+// READ RASPBERRY PI
+// ========================================
+
+void readRaspberryPi()
+{
+    while (PiSerial.available())
+    {
+        char c = PiSerial.read();
+
+        // End of packet
+        if (c == '\n' || c == '\r')
+        {
+            if (discardPiLine)
+            {
+                discardPiLine = false;
+                piInputIndex = 0;
+                continue;
+            }
+
+            if (piInputIndex > 0)
+            {
+                piInputBuffer[piInputIndex] = '\0';
+
+                if (parsePiCommand(piInputBuffer))
+                {
+                    Serial.print("Front speed: ");
+                    Serial.println(currentCommand.frontWheelSpeed);
+
+                    Serial.print("Rear speed: ");
+                    Serial.println(currentCommand.rearWheelSpeed);
+
+                    Serial.print("Front angle: ");
+                    Serial.println(currentCommand.frontWheelAngle);
+
+                    Serial.print("Rear angle: ");
+                    Serial.println(currentCommand.rearWheelAngle);
+                }
+                else
+                {
+                    Serial.print("Invalid Pi command: ");
+                    Serial.println(piInputBuffer);
+                }
+
+                piInputIndex = 0;
+            }
+        }
+
+        // Read characters
+        else if (!discardPiLine)
+        {
+            if (piInputIndex < sizeof(piInputBuffer) - 1)
+            {
+                piInputBuffer[piInputIndex++] = c;
+            }
+            else
+            {
+                // Discard entire oversized packet
+                piInputIndex = 0;
+                discardPiLine = true;
+
+                Serial.println("Pi packet overflow");
+            }
+        }
+    }
+}
+
+// ========================================
+// SEND ODOMETRY
+// ========================================
+
+void sendOdometry()
+{
+    unsigned long currentTime = millis();
+
+    if (currentTime - lastOdomTime < ODOM_INTERVAL)
+    {
+        return;
+    }
+
+    unsigned long elapsedTime =
+        currentTime - lastOdomTime;
+
+    lastOdomTime = currentTime;
+
+    // Read encoder counts atomically
+    long count1;
+    long count2;
+
+    noInterrupts();
+
+    count1 = encoderCount1;
+    count2 = encoderCount2;
+
+    interrupts();
+
+    // Encoder differences
+    long delta1 = count1 - previousCount1;
+    long delta2 = count2 - previousCount2;
+
+    // Calculate RPM
+    rpm1 = (
+        (float)delta1 / ENCODER_PPR
+    ) * (60000.0f / elapsedTime);
+
+    rpm2 = (
+        (float)delta2 / ENCODER_PPR
+    ) * (60000.0f / elapsedTime);
+
+    // Update previous counts
+    previousCount1 = count1;
+    previousCount2 = count2;
+
+    // Send to Raspberry Pi (UART2) and mirror to USB Serial Monitor (UART0)
+    PiSerial.printf(
+        "ODOM,%ld,%ld,%.2f,%.2f,%.2f,%.2f\n",
+        count1,
+        count2,
+        rpm1,
+        rpm2,
+        currentCommand.frontWheelAngle,
+        currentCommand.rearWheelAngle
+    );
+
+    Serial.printf(
+        "ODOM,%ld,%ld,%.2f,%.2f,%.2f,%.2f\n",
+        count1,
+        count2,
+        rpm1,
+        rpm2,
+        currentCommand.frontWheelAngle,
+        currentCommand.rearWheelAngle
+    );
+}
+
+// ========================================
+// EMERGENCY STOP
+// ========================================
+
+void emergencyStop()
+{
+    eStopped = true;
+    piCommandValid = false;
+
+    stopMotors();
+
+    currentCommand.frontWheelSpeed = 0;
+    currentCommand.rearWheelSpeed = 0;
+
+    Serial.println("EMERGENCY STOP");
+
+    PiSerial.println("STATUS,ESTOP");
+}
+
+// ========================================
+// RESTART SYSTEM
+// ========================================
+
+void restartSystem()
+{
+    // Clear previous motion commands
+    currentCommand.frontWheelSpeed = 0;
+    currentCommand.rearWheelSpeed = 0;
+
+    piCommandValid = false;
+
+    stopMotors();
+
+    // Explicit restart command clears latch
+    eStopped = false;
+
+    Serial.println("SYSTEM READY");
+
+    PiSerial.println("STATUS,READY");
+}
+
+// ========================================
+// CHECK NRF24L01
+// ========================================
+
+void checkRadio()
+{
+    if (!radioReady)
+    {
+#if ENABLE_NRF_CHECK
+        emergencyStop();
+#endif
+        return;
+    }
+
+    // Drain all pending radio commands
+    while (radio.available())
+    {
+        uint8_t command = 0;
+
+        radio.read(&command, sizeof(command));
+
+        Serial.print("nRF command: ");
+        Serial.println(command);
+
+        if (command == CMD_ESTOP)
+        {
+            emergencyStop();
+        }
+
+        else if (command == CMD_RESTART)
+        {
+            restartSystem();
+        }
+    }
+}
+
+// ========================================
+// SERVO CONTROL
+// ========================================
+
+// Steering conversion is deliberately disabled
+// until the geometry equations are validated.
+//
+// The Pi sends wheel angles, NOT servo angles.
+//
+// This function holds both servos at neutral.
+// Do not replace it with direct angle writes.
+
+void setServoAngles(float frontAngle, float rearAngle)
+{
+    (void)frontAngle;
+    (void)rearAngle;
+
+    frontServo.write(FRONT_NEUTRAL);
+    backServo.write(REAR_NEUTRAL);
+}
+
+// ========================================
+// SETUP
+// ========================================
+
+void setup()
+{
+    // ------------------------------------
+    // 1. Serial Monitor
+    // ------------------------------------
+
+    Serial.begin(115200);
+
+    Serial.println("ESP32 STARTING");
+
+    // ------------------------------------
+    // 2. Raspberry Pi UART
+    // ------------------------------------
+
+    PiSerial.begin(
+        PI_BAUD,
+        SERIAL_8N1,
+        RX,
+        TX
+    );
+
+    Serial.println("Raspberry Pi UART ready");
+
+    // ------------------------------------
+    // 3. DRV8833 Motor Driver
+    // ------------------------------------
+
+    pinMode(IN1, OUTPUT);
+    pinMode(IN2, OUTPUT);
+    pinMode(IN3, OUTPUT);
+    pinMode(IN4, OUTPUT);
+
+    // Arduino-ESP32 core 3.x
+    bool pwmReady = true;
+
+    pwmReady &= ledcAttach(IN1, PWM_FREQ, PWM_RES);
+    pwmReady &= ledcAttach(IN2, PWM_FREQ, PWM_RES);
+    pwmReady &= ledcAttach(IN3, PWM_FREQ, PWM_RES);
+    pwmReady &= ledcAttach(IN4, PWM_FREQ, PWM_RES);
+
+    stopMotors();
+
+    if (!pwmReady)
+    {
+        Serial.println("Motor PWM setup failed");
+
+        while (true)
+        {
+            stopMotors();
+            delay(100);
+        }
+    }
+
+    Serial.println("Motor driver ready");
+
+    // ------------------------------------
+    // 4. Encoder Initialisation
+    // ------------------------------------
+
+    pinMode(A1, INPUT);
+    pinMode(B1, INPUT);
+
+    pinMode(A2, INPUT);
+    pinMode(B2, INPUT);
+
+    noInterrupts();
+
+    encoderCount1 = 0;
+    encoderCount2 = 0;
+
+    interrupts();
+
+    attachInterrupt(
+        digitalPinToInterrupt(A1),
+        readEncoder1,
+        RISING
+    );
+
+    attachInterrupt(
+        digitalPinToInterrupt(A2),
+        readEncoder2,
+        RISING
+    );
+
+    previousCount1 = 0;
+    previousCount2 = 0;
+
+    rpm1 = 0;
+    rpm2 = 0;
+
+    lastOdomTime = millis();
+
+    Serial.println("Encoders ready");
+
+    // ------------------------------------
+    // 5. Servo Initialisation
+    // ------------------------------------
+
+    frontServo.setPeriodHertz(50);
+    backServo.setPeriodHertz(50);
+
+    frontServo.attach(FRONT_SERVO_PIN, 500, 2400);
+    backServo.attach(REAR_SERVO_PIN, 500, 2400);
+
+    frontServo.write(FRONT_NEUTRAL);
+    backServo.write(REAR_NEUTRAL);
+
+    Serial.println("Servos ready");
+
+    // ------------------------------------
+    // 6. nRF24L01 Initialisation
+    // ------------------------------------
+
+    SPI.begin(SCK, MISO, MOSI, CSN);
+
+    radioReady = radio.begin();
+
+    if (!radioReady)
+    {
+        Serial.println("WARNING: nRF24 not detected");
+
+#if ENABLE_NRF_CHECK
+        Serial.println("ERROR: nRF24 is required (ENABLE_NRF_CHECK=true). Halting system.");
+        eStopped = true;
+        stopMotors();
+
+        while (true)
+        {
+            stopMotors();
+            delay(100);
+        }
+#else
+        Serial.println("INFO: Continuing in bench-test mode (ENABLE_NRF_CHECK=false)");
+#endif
+    }
+    else
+    {
+        // Must match transmitter settings
+        radio.setChannel(76);
+        radio.setPALevel(RF24_PA_LOW);
+        radio.setDataRate(RF24_250KBPS);
+
+        radio.openReadingPipe(1, address);
+
+        radio.startListening();
+
+        Serial.println("nRF24 ready");
+    }
+
+    // ------------------------------------
+    // 7. Initial Safety State
+    // ------------------------------------
+
+#if ENABLE_NRF_CHECK
+    eStopped = true;  // Requires wireless remote CMD_RESTART to enable
+#else
+    eStopped = false; // Bench testing: ready immediately
+#endif
+    piCommandValid = false;
+
+    currentCommand.frontWheelSpeed = 0;
+    currentCommand.rearWheelSpeed = 0;
+
+    currentCommand.frontWheelAngle = 0;
+    currentCommand.rearWheelAngle = 0;
+
+    lastPiCommandTime = millis();
+
+    stopMotors();
+
+    Serial.println("======================");
+    Serial.println("ESP32 READY");
+#if ENABLE_NRF_CHECK
+    Serial.println("Waiting for restart (nRF)");
+#endif
+    Serial.println("======================");
+}
+
+// ========================================
+// MAIN LOOP
+// ========================================
+
+void loop()
+{
+     // Front motor
+    setSingleMotor(IN1, IN2, 200);
+
+    // Rear motor
+    setSingleMotor(IN3, IN4, 200);
 
 }
